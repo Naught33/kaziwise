@@ -258,17 +258,25 @@ type AssetWithPages struct {
 	Renderable []RenderablePage `json:"renderable_pages"`
 }
 
-// RenderablePage is a non-blank page plus its viewing context. Blank
-// pages are deliberately absent from this list.
+// RenderablePage is page metadata for the player: where the page is in the
+// served document and which chapter it belongs to. It deliberately carries
+// NO extracted text and NO per-page image URL.
+//
+// The client renders the original file itself (pdf.js against the signed
+// download URL), so the server's only job is to say which physical page is
+// a chapter divider. Shipping text_content here is what made a PDF block
+// display as unformatted extracted text.
 type RenderablePage struct {
-	PageNumber   int     `json:"page_number"`
-	ChapterIndex int     `json:"chapter_index"`
+	// PageNumber is the 1-based physical page in the served document.
+	// The player passes it straight to the viewer and to the page-view
+	// endpoint, so it must never be re-numbered.
+	PageNumber int `json:"page_number"`
+	// IsBreak marks a blank divider page. The player turns these into a
+	// chapter title card and excludes them from the page count.
+	IsBreak bool `json:"is_break"`
+	// ChapterTitle is the chapter this page introduces (on a break) or
+	// belongs to (on a content page).
 	ChapterTitle *string `json:"chapter_title,omitempty"`
-	TextContent  *string `json:"text_content,omitempty"`
-	FileURL      string  `json:"file_url"`
-	// The original 1-based page to show for a viewer that renders the
-	// source document (pdf.js / LibreOffice export / image sequence).
-	SourcePage int `json:"source_page"`
 }
 
 // ---------------------------------------------------------------------
@@ -359,8 +367,12 @@ type Block struct {
 	UpdatedAt   time.Time  `json:"updated_at"`
 
 	// Hydrated
-	Asset        *Asset           `json:"asset,omitempty"`
-	URL          *string          `json:"url,omitempty"`
+	// Asset is hydrated by the API layer, not the block projection: the
+	// download URL is signed and must be minted per response.
+	Asset *Asset  `json:"asset,omitempty"`
+	URL   *string `json:"url,omitempty"`
+	// Pages is one entry per physical page of the served document,
+	// including chapter breaks. See RenderablePage.
 	Pages        []RenderablePage `json:"pages,omitempty"`
 	ChapterCount int              `json:"chapter_count,omitempty"`
 	// SeenPages is the learner's consumed page numbers (learner view).

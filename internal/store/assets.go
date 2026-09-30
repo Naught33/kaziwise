@@ -137,16 +137,13 @@ func (db *DB) AssetsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 	if len(ids) == 0 {
 		return out, nil
 	}
-	// The array is passed as text, not []uuid: `any($2)` on a bare
-	// []uuid.UUID fails through the Supabase pooler, which reports OID 0
-	// for the untyped parameter and leaves pgx with no encode plan.
-	texts := make([]string, 0, len(ids))
-	for _, id := range ids {
-		texts = append(texts, id.String())
-	}
+	// The array is passed as text rather than []uuid: the pooler reports
+	// OID 0 for the untyped parameter, so pgx finds no encode plan for a
+	// []uuid.UUID. uuidStrings plus the ::uuid[] cast is the shape the
+	// sql_test guard requires.
 	rows, err := db.pool.Query(ctx,
 		`select `+assetCols+` from assets
-		 where org_id = $1 and id::text = any($2::text[])`, orgID, texts)
+		 where org_id = $1 and id = any($2::uuid[])`, orgID, uuidStrings(ids))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -161,20 +158,29 @@ func (db *DB) AssetsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID)
 	return out, mapErr(rows.Err())
 }
 
-// RenderablePages returns the asset's non-blank pages, clipped to the
-// 1-based inclusive range from/to, ordered by page number. A blank page is
-// a chapter delimiter and is deliberately excluded, so the caller never
-// renders a stray empty page.
+// PageMeta is one page of a served document: its position and whether it
+// is a chapter divider. It carries no text and no image URL, because the
+// client renders the original file itself.
+type PageMeta struct {
+	PageNumber   int     `json:"page_number"`
+	ChapterIndex int     `json:"chapter_index"`
+	ChapterTitle *string `json:"chapter_title,omitempty"`
+	IsBreak      bool    `json:"is_break"`
+}
+
+// PageMetas returns metadata for every physical page in the 1-based
+// inclusive range from/to, ordered by page number.
 //
-// Blank pages are still needed to resolve a chapter title, so a page that
-// has no text but belongs to a named chapter is kept when chapter_from /
-// chapter_to is supplied. This is what the player renders per page.
-func (db *DB) RenderablePages(ctx context.Context, orgID, assetID uuid.UUID, from, to int) ([]domain.RenderablePage, error) {
+// Chapter breaks ARE included: the player needs to know a page is a
+// divider so it can render a chapter title card instead of a blank
+// canvas. text_content is deliberately not selected — serving it is what
+// made a PDF block display as unformatted extracted text.
+func (db *DB) PageMetas(ctx context.Context, orgID, assetID uuid.UUID, from, to int) ([]PageMeta, error) {
 	if from < 1 {
 		from = 1
 	}
 	rows, err := db.pool.Query(ctx, `
-		select page_number, chapter_index, chapter_title, is_blank, text_content
+		select page_number, chapter_index, chapter_title, is_blank
 		from asset_pages
 		where org_id = $1 and asset_id = $2 and page_number >= $3 and page_number <= $4
 		order by page_number`, orgID, assetID, from, to)
@@ -182,22 +188,12 @@ func (db *DB) RenderablePages(ctx context.Context, orgID, assetID uuid.UUID, fro
 		return nil, mapErr(err)
 	}
 	defer rows.Close()
-	out := []domain.RenderablePage{}
+	out := []PageMeta{}
 	for rows.Next() {
-		var p domain.RenderablePage
-		var blank bool
-		if err := rows.Scan(&p.PageNumber, &p.ChapterIndex, &p.ChapterTitle, &blank, &p.TextContent); err != nil {
+		var p PageMeta
+		if err := rows.Scan(&p.PageNumber, &p.ChapterIndex, &p.ChapterTitle, &p.IsBreak); err != nil {
 			return nil, mapErr(err)
 		}
-		if blank {
-			continue
-		}
-		// SourcePage is the original 1-based page in the source document.
-		// It equals PageNumber here because a clipped page list is not
-		// re-numbered; a viewer that renders the whole file uses this to
-		// jump to the right page.
-		p.SourcePage = p.PageNumber
-		p.FileURL = ""
 		out = append(out, p)
 	}
 	return out, mapErr(rows.Err())

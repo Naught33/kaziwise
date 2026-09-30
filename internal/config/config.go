@@ -146,7 +146,11 @@ func Load() (*Config, error) {
 		MaxUploadMB:   int64(envInt("MAX_UPLOAD_MB", 512)),
 		PresignTTL:    envDuration("PRESIGNED_URL_TTL", 15*time.Minute),
 
-		DownloadURLTTL: envDuration("DOWNLOAD_URL_TTL", 15*time.Minute),
+		// A lesson can run far longer than a single API call, and the player
+		// hands this URL straight to pdf.js. A 15 minute link expires
+		// mid-lesson and the viewer dies on a long document, so the
+		// default is sized to comfortably outlast one sitting.
+		DownloadURLTTL: envDuration("DOWNLOAD_URL_TTL", 6*time.Hour),
 
 		SeedOrgName:  env("SEED_ORG_NAME", "KaziWise Demo Ltd"),
 		SeedOrgSlug:  env("SEED_ORG_SLUG", "kaziwise-demo"),

@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // The projections this guard inspects, as (bare, joined) pairs.
@@ -126,5 +128,87 @@ func TestProjectionPairsAgree(t *testing.T) {
 					name, i, bare[i], joined[i])
 			}
 		}
+	}
+}
+
+// countProjectionColumns counts the columns in a projection. A line can hold
+// several, so this splits on commas rather than counting lines.
+func countProjectionColumns(projection string) int {
+	n := 0
+	for _, line := range strings.Split(projection, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		for _, part := range strings.Split(line, ",") {
+			if strings.TrimSpace(part) != "" {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// countRow stands in for a pgx row so a scanner's destination count can be
+// inspected without a database.
+type countRow struct{ n int }
+
+func (r *countRow) Scan(dest ...any) error { r.n = len(dest); return nil }
+
+// TestScanAttemptDestinationsMatchTheSelectedColumns guards the shared
+// attempt scanner. Both callers select attemptColsJoined plus c.pass_mark,
+// but the scanner used to take the pass mark as a Go argument and never
+// scanned it, so pgx saw 13 field descriptions against 12 destinations and
+// every attempt read failed at runtime with SQLSTATE 42P08. Like the
+// projection guards above, no build or unit test could catch it, because the
+// SQL is only parsed by Postgres when the endpoint is called.
+func TestScanAttemptDestinationsMatchTheSelectedColumns(t *testing.T) {
+	want := countProjectionColumns(attemptColsJoined) + 1 // plus c.pass_mark
+
+	row := &countRow{}
+	if _, err := scanAttempt(row); err != nil {
+		t.Fatalf("scanAttempt: %v", err)
+	}
+	if row.n != want {
+		t.Errorf("scanAttempt passed %d destinations, but the select has %d "+
+			"columns (attemptColsJoined plus c.pass_mark)", row.n, want)
+	}
+}
+
+// passMarkSlot is where c.pass_mark lands: after every column of
+// attemptColsJoined.
+const passMarkSlot = 12
+
+// assignRow fills destinations positionally, so the pass mark can be told
+// apart from the other numeric columns of the projection.
+type assignRow struct{}
+
+func (assignRow) Scan(dest ...any) error {
+	for i, d := range dest {
+		switch p := d.(type) {
+		case *float64:
+			if i == passMarkSlot {
+				*p = 70
+			} else {
+				*p = 1
+			}
+		case *string:
+			*p = "in_progress"
+		case *uuid.UUID:
+			*p = uuid.New()
+		}
+	}
+	return nil
+}
+
+// TestScanAttemptReadsThePassMark pins that the pass mark comes from the row
+// rather than from a caller-supplied argument. Handing it in instead left
+// every listed attempt reporting a pass mark of zero.
+func TestScanAttemptReadsThePassMark(t *testing.T) {
+	a, err := scanAttempt(assignRow{})
+	if err != nil {
+		t.Fatalf("scanAttempt: %v", err)
+	}
+	if a.PassMark != 70 {
+		t.Errorf("PassMark = %v, want the 70 the row carried", a.PassMark)
 	}
 }

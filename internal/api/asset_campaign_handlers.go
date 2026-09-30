@@ -2,9 +2,13 @@ package api
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"path"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,6 +25,161 @@ import (
 // ---------------------------------------------------------------------
 // Assets (screen 04)
 // ---------------------------------------------------------------------
+
+// serveFile streams a stored object back to the browser. It is the
+// download_url target for the local storage driver, which cannot pre-sign.
+//
+// Range support is not optional: pdf.js requests byte ranges when opening a
+// large PDF, and without it a 50 MB file is pushed in one blocking
+// response. CORS matters for the same reason, since the client fetches the
+// document from a different origin than the app.
+func (s *Server) serveFile(w http.ResponseWriter, r *http.Request) {
+	// chi yields the wildcard after "/v1/files/" as "{bucket}/{key...}".
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/files/")
+	rest = strings.TrimPrefix(rest, "/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	bucket, key := parts[0], parts[1]
+	if _, err := url.PathUnescape(bucket); err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+	// The key is still percent-encoded from the URL the driver built.
+	decoded, err := url.PathUnescape(key)
+	if err != nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	body, obj, err := s.storage.Open(r.Context(), bucket, decoded)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			http.Error(w, "not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "storage error", http.StatusBadGateway)
+		return
+	}
+	defer body.Close()
+
+	mime := obj.MimeType
+	if mime == "" {
+		mime = mimeByExt(decoded)
+	}
+	w.Header().Set("Content-Type", mime)
+	w.Header().Set("Accept-Ranges", "bytes")
+	// Inline so the browser's viewer can render a PDF rather than download
+	// it; the download link uses the `download` attribute to override.
+	w.Header().Set("Content-Disposition",
+		fmt.Sprintf("inline; filename=%q", obj.Name))
+	// This route is unauthenticated (see publicOrBearer), so it must not
+	// be cached by a shared proxy holding one org's material.
+	w.Header().Set("Cache-Control", "private, max-age=300")
+
+	size := obj.Size
+	if r.Header.Get("Range") != "" && size > 0 {
+		start, end, ok := parseRange(r.Header.Get("Range"), size)
+		if !ok {
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes */%d", size))
+			w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+			return
+		}
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", start, end, size))
+		w.Header().Set("Content-Length", fmt.Sprint(end-start+1))
+		w.WriteHeader(http.StatusPartialContent)
+		if seeker, ok := body.(io.Seeker); ok {
+			if _, err := seeker.Seek(start, io.SeekStart); err != nil {
+				return
+			}
+		}
+		_, _ = io.Copy(w, io.LimitReader(body, end-start+1))
+		return
+	}
+
+	if size > 0 {
+		w.Header().Set("Content-Length", fmt.Sprint(size))
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.Copy(w, body)
+}
+
+// parseRange understands a single "bytes=start-end" span, which is all
+// pdf.js asks for. A multi-range request is answered as unsatisfiable
+// rather than silently returning the whole file.
+func parseRange(header string, size int64) (start, end int64, ok bool) {
+	spec := strings.TrimSpace(header)
+	if !strings.HasPrefix(spec, "bytes=") {
+		return 0, 0, false
+	}
+	spec = strings.TrimPrefix(spec, "bytes=")
+	if strings.Contains(spec, ",") {
+		return 0, 0, false
+	}
+	part := strings.SplitN(spec, "-", 2)
+	if len(part) != 2 {
+		return 0, 0, false
+	}
+	if part[0] == "" {
+		// Suffix form: the last N bytes.
+		n, err := strconv.ParseInt(part[1], 10, 64)
+		if err != nil || n <= 0 {
+			return 0, 0, false
+		}
+		if n > size {
+			n = size
+		}
+		return size - n, size - 1, true
+	}
+	start, err := strconv.ParseInt(part[0], 10, 64)
+	if err != nil || start < 0 || start >= size {
+		return 0, 0, false
+	}
+	end = size - 1
+	if part[1] != "" {
+		if end, err = strconv.ParseInt(part[1], 10, 64); err != nil {
+			return 0, 0, false
+		}
+	}
+	if end >= size {
+		end = size - 1
+	}
+	if end < start {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
+// mimeByExt is the fallback when storage recorded no content type, which
+// happens for objects written by an older upload.
+func mimeByExt(key string) string {
+	switch strings.ToLower(path.Ext(key)) {
+	case ".pdf":
+		return "application/pdf"
+	case ".pptx":
+		return "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".mp4":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".json":
+		return "application/json"
+	case ".txt":
+		return "text/plain; charset=utf-8"
+	default:
+		return "application/octet-stream"
+	}
+}
 
 func (s *Server) listAssets(w http.ResponseWriter, r *http.Request) {
 	orgID, _, err := orgAndActor(r)
@@ -284,6 +443,37 @@ func (s *Server) createQuestion(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
+	s.createQuestionForCourse(w, r, orgID, courseID, nil)
+}
+
+// createLessonQuestion adds a question to one lesson. The lesson travels in
+// the path, so the course is resolved from it and the body is not allowed to
+// attach the question somewhere else.
+func (s *Server) createLessonQuestion(w http.ResponseWriter, r *http.Request) {
+	orgID, _, err := orgAndActor(r)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	lessonID, err := pathUUID(r, "id")
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	lesson, err := s.db.LessonByID(r.Context(), orgID, lessonID)
+	if err != nil {
+		httpx.Fail(w, statusOf(err, "lesson"))
+		return
+	}
+	s.createQuestionForCourse(w, r, orgID, lesson.CourseID, &lessonID)
+}
+
+// createQuestionForCourse validates the body and writes the question. A
+// non-nil lessonID comes from the path and wins over any lesson_id in the
+// body; on the course-scoped route lessonID is nil and the body decides.
+func (s *Server) createQuestionForCourse(w http.ResponseWriter, r *http.Request,
+	orgID, courseID uuid.UUID, lessonID *uuid.UUID) {
+
 	var req createQuestionRequest
 	if err := httpx.Decode(w, r, &req); err != nil {
 		httpx.Fail(w, err)
@@ -331,7 +521,9 @@ func (s *Server) createQuestion(w http.ResponseWriter, r *http.Request) {
 	if req.Position != nil {
 		p.Position = *req.Position
 	}
-	if raw := trimOrNil(deref(req.LessonID)); raw != nil {
+	if lessonID != nil {
+		p.LessonID = lessonID
+	} else if raw := trimOrNil(deref(req.LessonID)); raw != nil {
 		lid, err := uuid.Parse(*raw)
 		if err != nil {
 			httpx.Fail(w, httpx.FieldError("lesson_id", "That is not a valid lesson id."))

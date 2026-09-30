@@ -278,6 +278,7 @@ when rendering.
 | DELETE | `/v1/courses/questions/{questionId}` | admin | Deletes a question. |
 | POST | `/v1/courses/{id}/questions/reorder` | admin | `{ "ids": [...] }`. |
 | GET | `/v1/courses/lessons/{id}/questions` | manager+ | Questions attached to a lesson. |
+| POST | `/v1/courses/lessons/{id}/questions` | admin | Adds a question to that lesson. The path lesson wins over `lesson_id` in the body. |
 
 ### Campaigns and assignments
 
@@ -325,7 +326,8 @@ when rendering.
 | POST | `/v1/attempts/{attemptId}/answers` | learner | Saves answers without submitting. |
 | POST | `/v1/attempts/{attemptId}/submit` | learner | Submits; auto-grades objective questions. |
 | GET | `/v1/attempts/{attemptId}/result` | any | Result and score. |
-| GET | `/v1/attempts/{attemptId}/answers` | any | Answers with grades. |
+| GET | `/v1/attempts/{attemptId}/paper` | learner | Learner-safe question paper, answer keys stripped. |
+| GET | `/v1/attempts/{attemptId}/answers` | any | Grading script: the attempt plus saved answers. |
 | POST | `/v1/attempts/{attemptId}/grade` | manager+ | `{ "grades": [{ "answer_id", "points", "feedback" }] }`. |
 | POST | `/v1/attempts/{attemptId}/grade-answer` | manager+ | One grade: `answer_id`, `points`, `feedback`. |
 | GET | `/v1/grading/pending` | manager+ | Attempts awaiting manual grading. |

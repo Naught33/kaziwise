@@ -306,6 +306,12 @@ func (s *Server) buildRouter() http.Handler {
 	r.Get("/v1/certificates/public/{code}", s.publicCertificateHTML)
 	r.Get("/v1/certificates/public/{code}.json", s.publicCertificateJSON)
 
+	// Storage passthrough for the local driver, which cannot pre-sign and
+	// so points the client at this route. It supports Range because pdf.js
+	// streams a large PDF rather than fetching it whole. The Supabase
+	// driver hands out real signed URLs and never reaches this handler.
+	r.Get("/v1/files/*", s.serveFile)
+
 	r.Route("/v1", func(v1 chi.Router) {
 		v1.Route("/auth", s.authRoutes())
 

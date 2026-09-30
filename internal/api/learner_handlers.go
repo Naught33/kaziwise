@@ -181,14 +181,18 @@ func (s *Server) playCourse(w http.ResponseWriter, r *http.Request) {
 	httpx.JSON(w, body)
 }
 
-// hydrateBlockMedia fills in the asset, download URL and renderable pages
-// that domain.Block declares but the store projection does not read.
+// hydrateBlockMedia fills in the asset, download URL and page metadata that
+// domain.Block declares but the store projection does not read.
 //
 // Without this the player receives a PDF block with no `pages` and no
 // `asset`, so it falls through to "No document attached" even though the
 // file uploaded and parsed fine. The store intentionally keeps the block
 // projection narrow; this is the media layer, and it needs the storage
 // driver to mint a time-limited download URL.
+//
+// No page text is attached. The client renders the original file with
+// pdf.js, so shipping text_content is what made a PDF block display as
+// unformatted extracted text.
 func (s *Server) hydrateBlockMedia(ctx context.Context, orgID uuid.UUID, outline *domain.CourseOutline) error {
 	if outline == nil {
 		return nil
@@ -269,9 +273,19 @@ func (s *Server) hydrateBlockMedia(ctx context.Context, orgID uuid.UUID, outline
 		key := rangeKey{asset: asset.ID, from: from, to: to}
 		pages, ok := pageCache[key]
 		if !ok {
-			pages, err = s.db.RenderablePages(ctx, orgID, asset.ID, from, to)
+			metas, err := s.db.PageMetas(ctx, orgID, asset.ID, from, to)
 			if err != nil {
 				return err
+			}
+			// PageMetas is a store type; convert into the wire type here so
+			// the store does not depend on presentation concerns.
+			pages = make([]domain.RenderablePage, 0, len(metas))
+			for _, m := range metas {
+				pages = append(pages, domain.RenderablePage{
+					PageNumber:   m.PageNumber,
+					IsBreak:      m.IsBreak,
+					ChapterTitle: m.ChapterTitle,
+				})
 			}
 			pageCache[key] = pages
 		}
@@ -686,6 +700,37 @@ func (s *Server) listPendingGrading(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	httpx.JSONMeta(w, attempts, p.Meta(total))
+}
+
+// attemptPaper serves the learner-safe question paper for an attempt. The
+// player renders the questions from here; GET /attempts/{id}/answers is the
+// grader's script and carries the attempt plus the saved responses, so it has
+// no questions at all.
+func (s *Server) attemptPaper(w http.ResponseWriter, r *http.Request) {
+	orgID, actorID, err := orgAndActor(r)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	attemptID, err := pathUUID(r, "attemptId")
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	attempt, err := s.db.AttemptByID(r.Context(), orgID, attemptID)
+	if err != nil {
+		httpx.Fail(w, statusOf(err, "attempt"))
+		return
+	}
+	// The service owns ownership and campaign checks and strips every answer
+	// key, so the paper can never leak is_correct to a learner.
+	paper, err := s.svc.QuestionPaperForLearner(r.Context(), orgID, actorID, attempt.AssignmentID)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	paper.AttemptID = attemptID
+	httpx.JSON(w, paper)
 }
 
 // attemptAnswers gives a grader the full script: every answer with the

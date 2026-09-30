@@ -540,3 +540,51 @@ func TestItoaMatchesStrconv(t *testing.T) {
 		}
 	}
 }
+
+// TestSaveAnswerEncodesItsOptionArrayAsText covers the one query that writes a
+// uuid[] column without going through any($N): the VALUES clause binds the
+// array directly, so the ::uuid[] cast is the only thing telling the server
+// what the parameter is. That is why the any($N) guard above could not see it,
+// and the raw []uuid.UUID failed under exec mode with "cannot find encode
+// plan" every time a learner submitted a choice answer.
+func TestSaveAnswerEncodesItsOptionArrayAsText(t *testing.T) {
+	src, err := os.ReadFile("assignments.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	i := strings.Index(text, "func (db *DB) SaveAnswer(")
+	if i < 0 {
+		t.Fatal("SaveAnswer is missing from assignments.go")
+	}
+	body := text[i:]
+	if end := strings.Index(body, "\n}\n"); end >= 0 {
+		body = body[:end]
+	}
+	for _, want := range []string{"uuidStrings(", "$5::uuid[]"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("SaveAnswer must contain %q: under exec mode pgx cannot "+
+				"encode []uuid.UUID, because the parameter type resolves to "+
+				"OID 0 and there is no encode plan", want)
+		}
+	}
+}
+
+// TestUUIDStringsNeverReturnsNil covers the nil slice, which is what a written
+// question arrives with. Postgres wants an empty array literal rather than a
+// null, so the conversion must not hand back a nil slice.
+func TestUUIDStringsNeverReturnsNil(t *testing.T) {
+	got := uuidStrings(nil)
+	if got == nil {
+		t.Fatal("uuidStrings(nil) = nil, want an empty non-nil slice")
+	}
+	if len(got) != 0 {
+		t.Errorf("uuidStrings(nil) has %d elements, want 0", len(got))
+	}
+	// The real case: one selected option has to round-trip to its text form.
+	id := uuid.MustParse("288db620-67b8-48a3-b0af-8745f51c9d6d")
+	one := uuidStrings([]uuid.UUID{id})
+	if len(one) != 1 || one[0] != id.String() {
+		t.Errorf("uuidStrings([%s]) = %v, want [%s]", id, one, id)
+	}
+}

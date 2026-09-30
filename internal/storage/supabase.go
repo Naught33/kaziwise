@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -138,12 +139,18 @@ func (s *Supabase) SignedURL(ctx context.Context, bucket, key string, ttl time.D
 		ttl = 7 * 24 * time.Hour
 	}
 	endpoint := fmt.Sprintf("%s/storage/v1/object/sign/%s/%s", s.baseURL, url.PathEscape(bucket), encodePath(clean))
-	form := url.Values{"expiresIn": {fmt.Sprintf("%d", int(ttl.Seconds()))}}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(form.Encode()))
+	// The sign endpoint wants a JSON object body. A form-encoded
+	// expiresIn is rejected with 400 "body must be object", which used to
+	// surface as a missing download_url rather than as an error.
+	body, err := json.Marshal(map[string]string{"expiresIn": strconv.Itoa(int(ttl.Seconds()))})
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	for k, v := range s.headers() {
 		req.Header.Set(k, v)
 	}
@@ -156,18 +163,33 @@ func (s *Supabase) SignedURL(ctx context.Context, bucket, key string, ttl time.D
 		return "", storageErr(resp)
 	}
 	var out struct {
-		SignedURL string `json:"signedURL"`
+		// The field is "signedURL" in the REST response; storage-js also
+		// exposes "signedUrl", and both spellings are accepted so a
+		// response change cannot silently produce an empty URL.
+		SignedURL    string `json:"signedURL"`
+		SignedURLAlt string `json:"signedUrl"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		return "", fmt.Errorf("supabase storage sign decode: %w", err)
 	}
-	if out.SignedURL == "" {
+	signed := out.SignedURL
+	if signed == "" {
+		signed = out.SignedURLAlt
+	}
+	if signed == "" {
 		return "", errors.New("supabase returned an empty signed url")
 	}
-	if strings.HasPrefix(out.SignedURL, "http") {
-		return out.SignedURL, nil
+	if strings.HasPrefix(signed, "http") {
+		return signed, nil
 	}
-	return s.baseURL + out.SignedURL, nil
+	// The response path is relative to the project root, e.g.
+	// "/object/sign/bucket/key?token=...", so it must keep the
+	// /storage/v1 prefix. Prefixing the bare base URL produced
+	// 404 "requested path is invalid" on every signed fetch.
+	if strings.HasPrefix(signed, "/storage/v1/") {
+		return s.baseURL + signed, nil
+	}
+	return s.baseURL + "/storage/v1" + signed, nil
 }
 
 func (s *Supabase) Delete(ctx context.Context, bucket, key string) error {

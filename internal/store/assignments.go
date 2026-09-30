@@ -227,12 +227,17 @@ func (db *DB) LessonStatusMap(ctx context.Context, orgID, learnerID, courseID uu
 // assignment of one learner. A passed or failed assignment is never
 // downgraded: the assessment outcome outranks the learning progress.
 func refreshAssignmentProgress(ctx context.Context, tx pgxTx, orgID uuid.UUID, assignmentID *uuid.UUID, learnerID uuid.UUID) error {
-	filter := "a2.learner_id = $2"
+	// $1 is always the org and $2 is the assignment or the learner. Every
+	// statement below must reference both, otherwise Postgres cannot infer
+	// the type of the unused parameter and rejects the query.
+	scope := "learner_id = $2"
 	args := []any{orgID, learnerID}
 	if assignmentID != nil {
-		filter = "a2.id = $2"
+		scope = "id = $2"
 		args = []any{orgID, *assignmentID}
 	}
+	filter := "org_id = $1 and " + scope
+	subFilter := "a2.org_id = $1 and a2." + scope
 
 	// Lessons that carry at least one content block form the learning
 	// requirement; an assessment-only lesson does not gate progress.
@@ -265,9 +270,9 @@ func refreshAssignmentProgress(ctx context.Context, tx pgxTx, orgID uuid.UUID, a
 			                          and lp.learner_id = a2.learner_id
 			                          and lp.status = 'completed'))::int as done
 			from assignments a2
-			where ` + filter + `
+			where ` + subFilter + `
 		) agg
-		where a.id = agg.id`
+		where a.org_id = $1 and a.id = agg.id`
 
 	if _, err := tx.Exec(ctx, rollupSQL, args...); err != nil {
 		return mapErr(err)
@@ -277,7 +282,7 @@ func refreshAssignmentProgress(ctx context.Context, tx pgxTx, orgID uuid.UUID, a
 	// touch rather than only by a scheduled job.
 	overdueSQL := `
 		update assignments set status = 'overdue', updated_at = now()
-		where org_id = $1 and ` + filter + `
+		where ` + filter + `
 		  and due_date is not null and due_date < current_date
 		  and status in ('not_started','in_progress','pending_review')`
 	if _, err := tx.Exec(ctx, overdueSQL, args...); err != nil {
@@ -347,14 +352,18 @@ const attemptColsJoined = `
 	at.id, at.assignment_id, at.learner_id, at.attempt_number, at.status, at.max_score,
 	at.score, at.percent, at.passed, at.started_at, at.submitted_at, at.graded_at`
 
-func scanAttempt(row interface{ Scan(...any) error }, passMark float64) (*domain.Attempt, error) {
+// scanAttempt reads the shared attempt projection. Every caller appends
+// c.pass_mark to attemptColsJoined, so it is scanned as the thirteenth
+// destination instead of being handed in: passing it as a Go argument left
+// the column unscanned and every read failed with "number of field
+// descriptions must equal number of destinations".
+func scanAttempt(row interface{ Scan(...any) error }) (*domain.Attempt, error) {
 	var a domain.Attempt
-	err := row.Scan(&a.ID, &a.AssignmentID, &a.LearnerID, &a.AttemptNumber, &a.Status,
-		&a.MaxScore, &a.Score, &a.Percent, &a.Passed, &a.StartedAt, &a.SubmittedAt, &a.GradedAt)
-	if err != nil {
+	if err := row.Scan(&a.ID, &a.AssignmentID, &a.LearnerID, &a.AttemptNumber, &a.Status,
+		&a.MaxScore, &a.Score, &a.Percent, &a.Passed, &a.StartedAt, &a.SubmittedAt,
+		&a.GradedAt, &a.PassMark); err != nil {
 		return nil, mapErr(err)
 	}
-	a.PassMark = passMark
 	return &a, nil
 }
 
@@ -436,7 +445,7 @@ func (db *DB) AttemptByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Att
 		from attempts at
 		join assignments a2 on a2.id = at.assignment_id
 		join campaigns c on c.id = a2.campaign_id
-		where at.org_id = $1 and at.id = $2`, orgID, id), 0)
+		where at.org_id = $1 and at.id = $2`, orgID, id))
 }
 
 // AttemptDetail returns an attempt with its answers, the pass mark and the
@@ -554,7 +563,7 @@ func (db *DB) ListAttempts(ctx context.Context, orgID uuid.UUID, f AttemptFilter
 	defer rows.Close()
 	out := []domain.Attempt{}
 	for rows.Next() {
-		a, err := scanAttempt(rows, 0)
+		a, err := scanAttempt(rows)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -578,19 +587,20 @@ type UpsertAnswerParams struct {
 // SaveAnswer records or replaces one response. Only choice questions
 // persist an option set; text questions persist the typed text.
 func (db *DB) SaveAnswer(ctx context.Context, p UpsertAnswerParams) error {
-	opts := p.SelectedOptionIDs
-	if opts == nil {
-		opts = []uuid.UUID{}
-	}
+	// ::uuid[] lets the server coerce the array and uuidStrings keeps pgx
+	// from having to encode []uuid.UUID itself: under exec mode the
+	// parameter arrives with no type OID and the raw slice fails with
+	// "cannot find encode plan". A nil slice becomes an empty array.
 	_, err := db.pool.Exec(ctx, `
 		insert into attempt_answers (attempt_id, question_id, org_id, response_text, selected_option_ids)
-		values ($1,$2,$3,$4,$5)
+		values ($1,$2,$3,$4,$5::uuid[])
 		on conflict (attempt_id, question_id) do update
 		  set response_text = excluded.response_text,
 		      selected_option_ids = excluded.selected_option_ids,
 		      is_correct = null, points_awarded = null, feedback = null,
 		      graded_by = null, graded_at = null, updated_at = now()`,
-		p.AttemptID, p.QuestionID, p.OrgID, p.ResponseText, opts)
+		p.AttemptID, p.QuestionID, p.OrgID, p.ResponseText,
+		uuidStrings(p.SelectedOptionIDs))
 	return mapErr(err)
 }
 

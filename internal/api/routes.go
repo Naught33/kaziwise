@@ -162,7 +162,11 @@ func (s *Server) registerRoutes(r chi.Router) {
 		c.Get("/lessons/{id}/blocks", s.listBlocks)
 		c.Post("/lessons/{id}/blocks", requireRoleFunc(super, staff)(s.createBlock))
 		c.Post("/lessons/{id}/blocks/reorder", requireRoleFunc(super, staff)(s.reorderBlocks))
+		// Questions are authored against a lesson: the builder screen reads
+		// and writes this collection, so the POST has to sit beside the GET
+		// or chi answers 405 on a path it already serves.
 		c.Get("/lessons/{id}/questions", requireRoleFunc(manage)(s.listLessonQuestions))
+		c.Post("/lessons/{id}/questions", requireRoleFunc(super, staff)(s.createLessonQuestion))
 		c.Patch("/blocks/{id}", requireRoleFunc(super, staff)(s.updateBlock))
 		c.Delete("/blocks/{id}", requireRoleFunc(super, staff)(s.deleteBlock))
 
@@ -232,6 +236,7 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Post("/attempts/{attemptId}/answers", learnerOnly(s.saveAnswers))
 	r.Post("/attempts/{attemptId}/submit", learnerOnly(s.submitAttempt))
 	r.Get("/attempts/{attemptId}/result", s.attemptResult)
+	r.Get("/attempts/{attemptId}/paper", learnerOnly(s.attemptPaper))
 	r.Get("/attempts/{attemptId}/answers", s.attemptAnswers)
 	r.Post("/attempts/{attemptId}/grade", requireRoleFunc(manage)(s.gradeAnswers))
 	r.Post("/attempts/{attemptId}/grade-answer", requireRoleFunc(manage)(s.gradeAnswer))
