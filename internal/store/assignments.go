@@ -22,8 +22,10 @@ const assignmentJoins = `
 	join profiles p  on p.id = a.learner_id
 	left join profiles m on m.id = p.manager_id`
 
+// assignmentSelect is the projection only: every call site supplies its own
+// `select` keyword, so this must not carry one.
 const assignmentSelect = `
-	select ` + assignmentCols + `,
+	` + assignmentCols + `,
 	       c.name, co.title, p.full_name, p.email, p.department, p.manager_id, m.full_name,
 	       (a.due_date is not null and a.status in ('not_started','in_progress','pending_review')
 	        and a.due_date < current_date) as is_overdue,
@@ -333,7 +335,15 @@ func (db *DB) TouchAssignment(ctx context.Context, assignmentID uuid.UUID) error
 // Attempts
 // ---------------------------------------------------------------------
 
+// attemptCols is unqualified because CreateAttempt returns it from an
+// INSERT, where no table alias is in scope.
 const attemptCols = `
+	id, assignment_id, learner_id, attempt_number, status, max_score,
+	score, percent, passed, started_at, submitted_at, graded_at`
+
+// attemptColsJoined is the same projection under the alias the read paths
+// use.
+const attemptColsJoined = `
 	at.id, at.assignment_id, at.learner_id, at.attempt_number, at.status, at.max_score,
 	at.score, at.percent, at.passed, at.started_at, at.submitted_at, at.graded_at`
 
@@ -422,7 +432,7 @@ func (db *DB) CreateAttempt(ctx context.Context, orgID, assignmentID, learnerID 
 
 func (db *DB) AttemptByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Attempt, error) {
 	return scanAttempt(db.pool.QueryRow(ctx, `
-		select `+attemptCols+`, c.pass_mark
+		select `+attemptColsJoined+`, c.pass_mark
 		from attempts at
 		join assignments a2 on a2.id = at.assignment_id
 		join campaigns c on c.id = a2.campaign_id
@@ -436,7 +446,7 @@ func (db *DB) AttemptDetail(ctx context.Context, orgID, id uuid.UUID) (*domain.A
 	var passMark float64
 	var gradedByName *string
 	err := db.pool.QueryRow(ctx, `
-		select `+attemptCols+`, c.pass_mark, g.full_name
+		select `+attemptColsJoined+`, c.pass_mark, g.full_name
 		from attempts at
 		join assignments a2 on a2.id = at.assignment_id
 		join campaigns c on c.id = a2.campaign_id
@@ -517,8 +527,10 @@ func (db *DB) ListAttempts(ctx context.Context, orgID uuid.UUID, f AttemptFilter
 		b.args = append(b.args, *f.LearnerID)
 	}
 	if len(f.Learners) > 0 {
-		b.add("at.learner_id = any($" + itoa(len(b.values())+1) + ")")
-		b.args = append(b.args, f.Learners)
+		// Both parts matter: ::uuid[] lets the server coerce the array, and
+		// uuidStrings keeps pgx from having to encode []uuid.UUID itself.
+		b.add("at.learner_id = any($" + itoa(len(b.values())+1) + "::uuid[])")
+		b.args = append(b.args, uuidStrings(f.Learners))
 	}
 	if f.Status != "" {
 		b.add("at.status = $" + itoa(len(b.values())+1))
@@ -527,7 +539,7 @@ func (db *DB) ListAttempts(ctx context.Context, orgID uuid.UUID, f AttemptFilter
 	if f.NeedsReview {
 		b.add("at.status = 'pending_review'")
 	}
-	base := `select ` + attemptCols + `, c.pass_mark
+	base := `select ` + attemptColsJoined + `, c.pass_mark
 		from attempts at
 		join assignments a2 on a2.id = at.assignment_id
 		join campaigns c on c.id = a2.campaign_id` + b.whereClause() +

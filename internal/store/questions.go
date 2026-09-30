@@ -9,7 +9,16 @@ import (
 	"github.com/kaziwise/kaziwise_backend/internal/domain"
 )
 
+// questionCols is unqualified because CreateQuestion returns it from an
+// INSERT, where no table alias is in scope.
 const questionCols = `
+	id, course_id, lesson_id, org_id, type, prompt, hint, explanation,
+	points, position, min_length, max_length, is_required,
+	created_at, updated_at`
+
+// questionColsJoined is the same projection under the alias the read paths
+// use.
+const questionColsJoined = `
 	q.id, q.course_id, q.lesson_id, q.org_id, q.type, q.prompt, q.hint, q.explanation,
 	q.points, q.position, q.min_length, q.max_length, q.is_required,
 	q.created_at, q.updated_at`
@@ -39,7 +48,7 @@ func (db *DB) QuestionsForLesson(ctx context.Context, orgID, lessonID uuid.UUID)
 }
 
 func (db *DB) questionsWhere(ctx context.Context, where string, args ...any) ([]domain.Question, error) {
-	rows, err := db.pool.Query(ctx, `select `+questionCols+` from questions q where `+where, args...)
+	rows, err := db.pool.Query(ctx, `select `+questionColsJoined+` from questions q where `+where, args...)
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -67,10 +76,13 @@ func (db *DB) questionsWhere(ctx context.Context, where string, args ...any) ([]
 	for _, q := range out {
 		ids = append(ids, q.ID)
 	}
+	// question_options has no created_at, so the tiebreak is the primary key.
+	// A total order matters here: a partial one lets option rows swap between
+	// requests and shuffle the answers under the learner.
 	optRows, err := db.pool.Query(ctx, `
 		select o.id, o.question_id, o.label, o.is_correct, o.position
-		from question_options o where o.question_id = any($1)
-		order by o.position, o.created_at`, ids)
+		from question_options o where o.question_id = any($1::uuid[])
+		order by o.position, o.id`, uuidStrings(ids))
 	if err != nil {
 		return nil, mapErr(err)
 	}
@@ -94,7 +106,7 @@ func (db *DB) questionsWhere(ctx context.Context, where string, args ...any) ([]
 
 func (db *DB) QuestionByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Question, error) {
 	q, err := scanQuestion(db.pool.QueryRow(ctx,
-		`select `+questionCols+` from questions q where q.org_id = $1 and q.id = $2`, orgID, id))
+		`select `+questionColsJoined+` from questions q where q.org_id = $1 and q.id = $2`, orgID, id))
 	if err != nil {
 		return nil, err
 	}
@@ -313,7 +325,7 @@ func (db *DB) CorrectOptionIDs(ctx context.Context, questionIDs []uuid.UUID) (ma
 	}
 	rows, err := db.pool.Query(ctx, `
 		select question_id, id from question_options
-		where question_id = any($1) and is_correct`, questionIDs)
+		where question_id = any($1::uuid[]) and is_correct`, uuidStrings(questionIDs))
 	if err != nil {
 		return nil, mapErr(err)
 	}

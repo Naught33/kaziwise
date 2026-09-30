@@ -9,7 +9,15 @@ import (
 	"github.com/kaziwise/kaziwise_backend/internal/domain"
 )
 
+// certCols is unqualified because IssueCertificate returns it from an
+// INSERT, where no table alias is in scope.
 const certCols = `
+	id, org_id, learner_id, course_id, campaign_id, attempt_id,
+	certificate_number, verification_code, learner_name, course_title,
+	score, completed_at, issued_at, revoked_at, revoked_reason`
+
+// certColsJoined is the same projection under the alias the read paths use.
+const certColsJoined = `
 	ct.id, ct.org_id, ct.learner_id, ct.course_id, ct.campaign_id, ct.attempt_id,
 	ct.certificate_number, ct.verification_code, ct.learner_name, ct.course_title,
 	ct.score, ct.completed_at, ct.issued_at, ct.revoked_at, ct.revoked_reason`
@@ -82,7 +90,7 @@ func (db *DB) IssueCertificate(ctx context.Context, p IssueCertificateParams) (*
 
 func (db *DB) CertificateByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Certificate, error) {
 	c, err := scanCertificateWithOrg(db.pool.QueryRow(ctx,
-		`select `+certCols+`, o.name from certificates ct
+		`select `+certColsJoined+`, o.name from certificates ct
 		 join organisations o on o.id = ct.org_id
 		 where ct.org_id = $1 and ct.id = $2`, orgID, id))
 	if err != nil {
@@ -96,7 +104,7 @@ func (db *DB) CertificateByID(ctx context.Context, orgID, id uuid.UUID) (*domain
 // prove a certificate is genuine, and a stranger must be able to check it.
 func (db *DB) CertificateByCode(ctx context.Context, code string) (*domain.Certificate, error) {
 	c, err := scanCertificateWithOrg(db.pool.QueryRow(ctx, `
-		select `+certCols+`, o.name
+		select `+certColsJoined+`, o.name
 		from certificates ct join organisations o on o.id = ct.org_id
 		where lower(ct.verification_code) = lower($1)
 		   or lower(ct.certificate_number) = lower($1)`, strings.TrimSpace(code)))
@@ -112,7 +120,7 @@ func (db *DB) ListCertificates(ctx context.Context, orgID uuid.UUID, learnerID *
 		b.add("ct.learner_id = $" + itoa(len(b.values())+1))
 		b.args = append(b.args, *learnerID)
 	}
-	base := `select ` + certCols + `, o.name from certificates ct
+	base := `select ` + certColsJoined + `, o.name from certificates ct
 		join organisations o on o.id = ct.org_id` + b.whereClause() +
 		` order by ct.issued_at desc`
 	countSQL := `select count(*) from certificates ct` + b.whereClause()
@@ -138,14 +146,14 @@ func (db *DB) ListCertificates(ctx context.Context, orgID uuid.UUID, learnerID *
 // certificate for the same pass.
 func (db *DB) CertificateForAttempt(ctx context.Context, attemptID uuid.UUID) (*domain.Certificate, error) {
 	return scanCertificate(db.pool.QueryRow(ctx,
-		`select `+certCols+` from certificates ct where ct.attempt_id = $1`, attemptID))
+		`select `+certColsJoined+` from certificates ct where ct.attempt_id = $1`, attemptID))
 }
 
 // CertificateForLearnerCourse returns an existing valid certificate for a
 // learner on a course, used as a fallback when a re-attempt passes again.
 func (db *DB) CertificateForLearnerCourse(ctx context.Context, learnerID, courseID uuid.UUID) (*domain.Certificate, error) {
 	return scanCertificate(db.pool.QueryRow(ctx,
-		`select `+certCols+` from certificates ct
+		`select `+certColsJoined+` from certificates ct
 		 where ct.learner_id = $1 and ct.course_id = $2 and ct.revoked_at is null
 		 order by ct.issued_at desc limit 1`, learnerID, courseID))
 }

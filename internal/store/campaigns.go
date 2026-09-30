@@ -9,7 +9,16 @@ import (
 	"github.com/kaziwise/kaziwise_backend/internal/domain"
 )
 
+// campaignCols is unqualified because CreateCampaign returns it from an
+// INSERT, where no table alias is in scope.
 const campaignCols = `
+	id, org_id, course_id, name, description, status, audience_type,
+	audience_dept, due_date, pass_mark, issue_certificate, max_attempts,
+	require_learning, created_by, launched_at, closed_at, created_at, updated_at`
+
+// campaignColsJoined is the same projection under the alias the read paths
+// use.
+const campaignColsJoined = `
 	c.id, c.org_id, c.course_id, c.name, c.description, c.status, c.audience_type,
 	c.audience_dept, c.due_date, c.pass_mark, c.issue_certificate, c.max_attempts,
 	c.require_learning, c.created_by, c.launched_at, c.closed_at, c.created_at, c.updated_at`
@@ -202,7 +211,7 @@ func (db *DB) UpdateCampaign(ctx context.Context, orgID, id uuid.UUID, p UpdateC
 
 func (db *DB) CampaignByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Campaign, error) {
 	c, err := scanCampaignWithCourse(db.pool.QueryRow(ctx, `
-		select `+campaignCols+`, `+campaignAggs+`, co.title
+		select `+campaignColsJoined+`, `+campaignAggs+`, co.title
 		from campaigns c join courses co on co.id = c.course_id
 		where c.org_id = $1 and c.id = $2`, orgID, id))
 	if err != nil {
@@ -235,7 +244,7 @@ func (db *DB) ListCampaigns(ctx context.Context, orgID uuid.UUID, f CampaignList
 		b.add("c.course_id = $" + itoa(len(b.values())+1))
 		b.args = append(b.args, *f.CourseID)
 	}
-	base := `select ` + campaignCols + `, ` + campaignAggs + `, co.title
+	base := `select ` + campaignColsJoined + `, ` + campaignAggs + `, co.title
 		from campaigns c join courses co on co.id = c.course_id` + b.whereClause() +
 		` order by c.created_at desc`
 	countSQL := `select count(*) from campaigns c join courses co on co.id = c.course_id` + b.whereClause()
@@ -259,7 +268,7 @@ func (db *DB) ListCampaigns(ctx context.Context, orgID uuid.UUID, f CampaignList
 func (db *DB) DeleteCampaign(ctx context.Context, orgID, id uuid.UUID) error {
 	var c domain.Campaign
 	err := db.pool.QueryRow(ctx,
-		`select `+campaignCols+` from campaigns c where c.org_id = $1 and c.id = $2`, orgID, id).
+		`select `+campaignColsJoined+` from campaigns c where c.org_id = $1 and c.id = $2`, orgID, id).
 		Scan(&c.ID, &c.OrgID, &c.CourseID, &c.Name, &c.Description, &c.Status,
 			&c.AudienceType, &c.AudienceDept, &c.DueDate, &c.PassMark, &c.IssueCertificate,
 			&c.MaxAttempts, &c.RequireLearning, &c.CreatedBy, &c.LaunchedAt, &c.ClosedAt,

@@ -248,6 +248,8 @@ func (s *Server) registerRoutes(r chi.Router) {
 	r.Get("/reports/export/xlsx", requireRoleFunc(manage)(s.exportReportXLSX))
 	r.Get("/dashboard/kpis", requireRoleFunc(manage)(s.dashboardKPIs))
 	r.Get("/dashboard/attention", requireRoleFunc(manage)(s.dashboardAttention))
+	// The staff dashboard, distinct from the learner /dashboard above.
+	r.Get("/dashboard/admin", requireRoleFunc(manage)(s.adminDashboard))
 
 	// --- Certificates (screens 14, 15) -------------------------------
 	r.Route("/certificates", func(c chi.Router) {

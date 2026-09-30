@@ -255,6 +255,58 @@ func TestRoleAllowedNestsTheStaffLadder(t *testing.T) {
 	}
 }
 
+// The learner and staff dashboards are different payloads served from
+// different paths. They used to share /v1/dashboard, which returned the
+// learner view to a manager and left the staff screen reading fields that
+// were never there. Pin both paths so they cannot be conflated again.
+func TestLearnerAndStaffDashboardsAreDistinctRoutes(t *testing.T) {
+	s := testServer(t)
+	index := s.routeIndex()
+
+	seen := map[string]bool{}
+	for _, e := range index {
+		seen[e.Method+" "+e.Path] = true
+	}
+	for _, want := range []string{
+		"GET /v1/dashboard",
+		"GET /v1/dashboard/admin",
+		"GET /v1/dashboard/kpis",
+		"GET /v1/dashboard/attention",
+	} {
+		if !seen[want] {
+			t.Errorf("the route table is missing %s", want)
+		}
+	}
+}
+
+// The staff dashboard carries organisation-wide numbers, so it must sit
+// behind the manage gate like the other reporting reads. A learner reaching
+// it is a 403, not an empty payload.
+func TestStaffDashboardIsGatedFromLearners(t *testing.T) {
+	for _, tc := range []struct {
+		role string
+		want int
+	}{
+		{auth.RoleSuperAdmin, http.StatusOK},
+		{auth.RoleOrgAdmin, http.StatusOK},
+		{auth.RoleManager, http.StatusOK},
+		{auth.RoleLearner, http.StatusForbidden},
+	} {
+		r := httptest.NewRequest(http.MethodGet, "/v1/dashboard/admin", nil)
+		r = r.WithContext(context.WithValue(r.Context(), claimsKey,
+			&auth.Claims{UserID: uuid.New(), Role: auth.Role(tc.role)}))
+		w := httptest.NewRecorder()
+
+		gate := requireRoleFunc(manage)(func(http.ResponseWriter, *http.Request) {})
+		gate.ServeHTTP(w, r)
+
+		if w.Code != tc.want {
+			t.Errorf("role %q on the staff dashboard: status %d, want %d",
+				tc.role, w.Code, tc.want)
+		}
+	}
+}
+
 // A request with no claims at all is refused before the roles are compared.
 func TestRoleAllowedRejectsAnAnonymousRequest(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/v1/reports/overview", nil)

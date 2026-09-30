@@ -302,14 +302,22 @@ const userListJoin = `
 	    from assignments a where a.learner_id = p.id
 	) stats on true`
 
-func (db *DB) ListUsers(ctx context.Context, orgID uuid.UUID, f UserListFilter) ([]domain.User, int, error) {
-	b := orgScope(orgID)
+// userListWhere builds the WHERE clauses for the employee table. It is
+// separate from ListUsers so the tenant filter and the search clause can be
+// asserted without a database.
+//
+// Every clause is written against the p alias the query uses. Rewriting the
+// column names afterwards would double them ("p.p.full_name"), which
+// Postgres rejects as a missing column.
+func userListWhere(orgID uuid.UUID, f UserListFilter) *listBuilder {
+	b := orgScopeAs("p", orgID)
 	if f.Search != "" {
-		like := "%" + f.Search + "%"
-		// One placeholder reused three times, so the argument is appended
-		// once rather than three times.
-		b.add("(p.full_name ilike "+b.arg()+" or p.email ilike "+b.arg()+
-			" or coalesce(p.employee_number,'') ilike "+b.arg()+")", like, like, like)
+		// One placeholder reused across the three columns, so the value is
+		// appended once. Three copies would be three arguments for a single
+		// placeholder, and Postgres rejects the bind.
+		i := b.arg()
+		b.add("(p.full_name ilike "+i+" or p.email ilike "+i+
+			" or coalesce(p.employee_number,'') ilike "+i+")", "%"+f.Search+"%")
 	}
 	if f.Department != "" {
 		b.add("p.department = "+b.arg(), f.Department)
@@ -332,12 +340,12 @@ func (db *DB) ListUsers(ctx context.Context, orgID uuid.UUID, f UserListFilter) 
 		b.add("not exists (select 1 from assignments a2 where a2.learner_id = p.id and a2.course_id = "+
 			b.arg()+")", *f.WithoutCourseID)
 	}
+	return b
+}
 
-	// Rewrite the unqualified column names to the aliased table.
-	where := strings.ReplaceAll(b.whereClause(), "org_id =", "p.org_id =")
-	where = strings.ReplaceAll(where, "full_name ilike", "p.full_name ilike")
-	where = strings.ReplaceAll(where, "email ilike", "p.email ilike")
-	where = strings.ReplaceAll(where, "employee_number", "coalesce(p.employee_number,'')")
+func (db *DB) ListUsers(ctx context.Context, orgID uuid.UUID, f UserListFilter) ([]domain.User, int, error) {
+	b := userListWhere(orgID, f)
+	where := b.whereClause()
 
 	from := strings.Replace(userListJoin, "\n\t", "\n\t", 1)
 	base := from + where

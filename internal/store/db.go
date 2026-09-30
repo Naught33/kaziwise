@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -315,6 +316,26 @@ func prefixCols(clauses []string, cols ...string) []string {
 
 // itoa is a tiny helper for building numbered placeholders.
 func itoa(n int) string { return strconv.Itoa(n) }
+
+// uuidStrings renders a UUID slice for use as an array query argument.
+//
+// The connection deliberately runs in pgx's "exec" mode (see Connect) so
+// that prepared statements survive Supabase's transaction pooler, and exec
+// mode never issues a Describe. Without it pgx has no server-supplied type
+// for any parameter, so it encodes as text with an unknown type (OID 0). A
+// bare uuid.UUID still encodes because pgx has a registered codec for the
+// underlying [16]byte, but []uuid.UUID has no resolvable array element type
+// at OID 0 and fails with "cannot find encode plan" before the query is
+// sent. Strings have a registered text[] codec, so passing []string works
+// under every exec mode; the ::uuid[] cast on the parameter lets the server
+// coerce it back.
+func uuidStrings(ids []uuid.UUID) []string {
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = id.String()
+	}
+	return out
+}
 
 func round2(f float64) float64 { return math.Round(f*100) / 100 }
 

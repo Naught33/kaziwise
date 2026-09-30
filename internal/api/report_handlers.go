@@ -247,6 +247,23 @@ func (s *Server) publicCertificateHTML(w http.ResponseWriter, r *http.Request) {
 // Dashboards (screen 01)
 // ---------------------------------------------------------------------
 
+// adminDashboard serves the staff dashboard (screen 01) as one payload.
+// The pieces are also available individually under /dashboard/kpis and
+// /dashboard/attention; this route exists so the screen is a single call.
+func (s *Server) adminDashboard(w http.ResponseWriter, r *http.Request) {
+	orgID, _, err := orgAndActor(r)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	view, err := s.svc.AdminDashboard(r.Context(), orgID)
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+	httpx.JSON(w, view)
+}
+
 func (s *Server) dashboardKPIs(w http.ResponseWriter, r *http.Request) {
 	orgID, _, err := orgAndActor(r)
 	if err != nil {

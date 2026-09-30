@@ -319,7 +319,14 @@ func (db *DB) DeleteModule(ctx context.Context, orgID, id uuid.UUID) error {
 // Lessons
 // ---------------------------------------------------------------------
 
+// lessonCols is unqualified because the create path returns it from an
+// INSERT, where no table alias is in scope.
 const lessonCols = `
+	id, module_id, course_id, org_id, title, summary, kind, position,
+	estimated_minutes, created_at, updated_at`
+
+// lessonColsJoined is the same projection under the alias the read paths use.
+const lessonColsJoined = `
 	l.id, l.module_id, l.course_id, l.org_id, l.title, l.summary, l.kind, l.position,
 	l.estimated_minutes, l.created_at, l.updated_at`
 
@@ -335,7 +342,7 @@ func scanLesson(row interface{ Scan(...any) error }) (*domain.Lesson, error) {
 
 func (db *DB) ListLessons(ctx context.Context, orgID, courseID uuid.UUID) ([]domain.Lesson, error) {
 	rows, err := db.pool.Query(ctx, `
-		select `+lessonCols+`,
+		select `+lessonColsJoined+`,
 		       coalesce((select count(*) from blocks b where b.lesson_id = l.id), 0)::int as block_count,
 		       coalesce((select count(*) from questions q where q.lesson_id = l.id), 0)::int as question_count
 		from lessons l where l.org_id = $1 and l.course_id = $2
@@ -359,7 +366,7 @@ func (db *DB) ListLessons(ctx context.Context, orgID, courseID uuid.UUID) ([]dom
 
 func (db *DB) LessonByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Lesson, error) {
 	return scanLesson(db.pool.QueryRow(ctx,
-		`select `+lessonCols+` from lessons l where l.org_id = $1 and l.id = $2`, orgID, id))
+		`select `+lessonColsJoined+` from lessons l where l.org_id = $1 and l.id = $2`, orgID, id))
 }
 
 type CreateLessonParams struct {
@@ -444,7 +451,16 @@ func (db *DB) DeleteLesson(ctx context.Context, orgID, id uuid.UUID) error {
 // Blocks
 // ---------------------------------------------------------------------
 
+// blockCols is deliberately unqualified. The create path uses it in an
+// INSERT ... RETURNING, where no table alias is in scope, and a qualified
+// projection there fails with "missing FROM-clause entry".
 const blockCols = `
+	id, lesson_id, org_id, type, position, title, body, asset_id,
+	page_from, page_to, chapter_from, chapter_to, created_at, updated_at`
+
+// blockColsJoined is the same projection qualified with the alias the read
+// paths join under.
+const blockColsJoined = `
 	b.id, b.lesson_id, b.org_id, b.type, b.position, b.title, b.body, b.asset_id,
 	b.page_from, b.page_to, b.chapter_from, b.chapter_to, b.created_at, b.updated_at`
 
@@ -461,7 +477,7 @@ func scanBlock(row interface{ Scan(...any) error }) (*domain.Block, error) {
 
 func (db *DB) ListBlocks(ctx context.Context, orgID, lessonID uuid.UUID) ([]domain.Block, error) {
 	rows, err := db.pool.Query(ctx,
-		`select `+blockCols+` from blocks b where b.org_id = $1 and b.lesson_id = $2
+		`select `+blockColsJoined+` from blocks b where b.org_id = $1 and b.lesson_id = $2
 		 order by b.position, b.created_at`, orgID, lessonID)
 	if err != nil {
 		return nil, mapErr(err)
@@ -480,7 +496,7 @@ func (db *DB) ListBlocks(ctx context.Context, orgID, lessonID uuid.UUID) ([]doma
 
 func (db *DB) BlockByID(ctx context.Context, orgID, id uuid.UUID) (*domain.Block, error) {
 	return scanBlock(db.pool.QueryRow(ctx,
-		`select `+blockCols+` from blocks b where b.org_id = $1 and b.id = $2`, orgID, id))
+		`select `+blockColsJoined+` from blocks b where b.org_id = $1 and b.id = $2`, orgID, id))
 }
 
 type CreateBlockParams struct {
@@ -681,7 +697,7 @@ func (db *DB) CourseOutline(ctx context.Context, orgID, courseID uuid.UUID) (*do
 
 func (db *DB) blocksForCourse(ctx context.Context, orgID, courseID uuid.UUID) ([]domain.Block, error) {
 	rows, err := db.pool.Query(ctx, `
-		select `+blockCols+` from blocks b
+		select `+blockColsJoined+` from blocks b
 		join lessons l on l.id = b.lesson_id
 		where b.org_id = $1 and l.course_id = $2
 		order by l.position, b.position`, orgID, courseID)
