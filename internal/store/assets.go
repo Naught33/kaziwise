@@ -129,6 +129,80 @@ func (db *DB) AssetPages(ctx context.Context, orgID, assetID uuid.UUID) ([]domai
 	return out, mapErr(rows.Err())
 }
 
+// AssetsByIDs returns the given assets keyed by id. It is a single scoped
+// query so a course's blocks can be hydrated without N+1 round trips.
+// The map is empty when ids is empty.
+func (db *DB) AssetsByIDs(ctx context.Context, orgID uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]domain.Asset, error) {
+	out := map[uuid.UUID]domain.Asset{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	// The array is passed as text, not []uuid: `any($2)` on a bare
+	// []uuid.UUID fails through the Supabase pooler, which reports OID 0
+	// for the untyped parameter and leaves pgx with no encode plan.
+	texts := make([]string, 0, len(ids))
+	for _, id := range ids {
+		texts = append(texts, id.String())
+	}
+	rows, err := db.pool.Query(ctx,
+		`select `+assetCols+` from assets
+		 where org_id = $1 and id::text = any($2::text[])`, orgID, texts)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		a, err := scanAsset(rows)
+		if err != nil {
+			return nil, mapErr(err)
+		}
+		out[a.ID] = *a
+	}
+	return out, mapErr(rows.Err())
+}
+
+// RenderablePages returns the asset's non-blank pages, clipped to the
+// 1-based inclusive range from/to, ordered by page number. A blank page is
+// a chapter delimiter and is deliberately excluded, so the caller never
+// renders a stray empty page.
+//
+// Blank pages are still needed to resolve a chapter title, so a page that
+// has no text but belongs to a named chapter is kept when chapter_from /
+// chapter_to is supplied. This is what the player renders per page.
+func (db *DB) RenderablePages(ctx context.Context, orgID, assetID uuid.UUID, from, to int) ([]domain.RenderablePage, error) {
+	if from < 1 {
+		from = 1
+	}
+	rows, err := db.pool.Query(ctx, `
+		select page_number, chapter_index, chapter_title, is_blank, text_content
+		from asset_pages
+		where org_id = $1 and asset_id = $2 and page_number >= $3 and page_number <= $4
+		order by page_number`, orgID, assetID, from, to)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	out := []domain.RenderablePage{}
+	for rows.Next() {
+		var p domain.RenderablePage
+		var blank bool
+		if err := rows.Scan(&p.PageNumber, &p.ChapterIndex, &p.ChapterTitle, &blank, &p.TextContent); err != nil {
+			return nil, mapErr(err)
+		}
+		if blank {
+			continue
+		}
+		// SourcePage is the original 1-based page in the source document.
+		// It equals PageNumber here because a clipped page list is not
+		// re-numbered; a viewer that renders the whole file uses this to
+		// jump to the right page.
+		p.SourcePage = p.PageNumber
+		p.FileURL = ""
+		out = append(out, p)
+	}
+	return out, mapErr(rows.Err())
+}
+
 type AssetListFilter struct {
 	Search  string
 	Kind    string

@@ -68,6 +68,10 @@ const (
 	KindImage Kind = "image"
 	KindVideo Kind = "video"
 	KindOther Kind = "other"
+	// KindUnsupported marks a file whose extension is recognised but whose
+	// format cannot be parsed, such as a legacy binary .ppt. It never
+	// reaches storage.
+	KindUnsupported Kind = "unsupported"
 )
 
 // Options tunes the parser.
@@ -102,8 +106,13 @@ func DetectKind(filename, contentType string) Kind {
 	switch ext {
 	case ".pdf":
 		return KindPDF
-	case ".pptx", ".ppt":
+	case ".pptx":
 		return KindPPTX
+	case ".ppt":
+		// Legacy binary PowerPoint is an OLE compound file, not a zip, so it
+		// cannot be parsed by the OOXML reader. Classify it as unsupported
+		// rather than promising slides that will never be found.
+		return KindUnsupported
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".avif":
 		return KindImage
 	case ".mp4", ".webm", ".mov", ".m4v", ".ogg", ".avi", ".mkv":
@@ -278,6 +287,12 @@ func SniffKind(filename, contentType string, data []byte) Kind {
 		if kind == KindPPTX || strings.Contains(contentType, "presentation") {
 			return KindPPTX
 		}
+		return kind
+	}
+	// A legacy binary .ppt is an OLE compound file, not a zip. It was
+	// classified as slides by extension but cannot be read as one.
+	if kind == KindPPTX {
+		return KindUnsupported
 	}
 	return kind
 }

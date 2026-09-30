@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"net/http"
 	"strings"
 
@@ -140,6 +141,13 @@ func (s *Server) playCourse(w http.ResponseWriter, r *http.Request) {
 	}
 	applyLessonProgress(outline, lessonStatus, lessonScores)
 
+	// A PDF/PPTX block is useless to the player without its pages and a
+	// download URL, and neither is in the block projection.
+	if err := s.hydrateBlockMedia(r.Context(), orgID, outline); err != nil {
+		httpx.Fail(w, err)
+		return
+	}
+
 	questions, err := s.db.QuestionsForCourse(r.Context(), orgID, courseID)
 	if err != nil {
 		httpx.Fail(w, err)
@@ -171,6 +179,106 @@ func (s *Server) playCourse(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpx.JSON(w, body)
+}
+
+// hydrateBlockMedia fills in the asset, download URL and renderable pages
+// that domain.Block declares but the store projection does not read.
+//
+// Without this the player receives a PDF block with no `pages` and no
+// `asset`, so it falls through to "No document attached" even though the
+// file uploaded and parsed fine. The store intentionally keeps the block
+// projection narrow; this is the media layer, and it needs the storage
+// driver to mint a time-limited download URL.
+func (s *Server) hydrateBlockMedia(ctx context.Context, orgID uuid.UUID, outline *domain.CourseOutline) error {
+	if outline == nil {
+		return nil
+	}
+	// Collect the distinct assets first so both the asset rows and the
+	// page lists are fetched once per document, not once per block.
+	assetIDs := []uuid.UUID{}
+	seen := map[uuid.UUID]bool{}
+	blocks := []*domain.Block{}
+	for mi := range outline.Modules {
+		for li := range outline.Modules[mi].Lessons {
+			for bi := range outline.Modules[mi].Lessons[li].Blocks {
+				b := &outline.Modules[mi].Lessons[li].Blocks[bi]
+				if b.AssetID == nil {
+					continue
+				}
+				if !seen[*b.AssetID] {
+					seen[*b.AssetID] = true
+					assetIDs = append(assetIDs, *b.AssetID)
+				}
+				blocks = append(blocks, b)
+			}
+		}
+	}
+	if len(assetIDs) == 0 {
+		return nil
+	}
+
+	assets, err := s.db.AssetsByIDs(ctx, orgID, assetIDs)
+	if err != nil {
+		return err
+	}
+	// One signed URL per asset, reused by every block that references it.
+	signed := map[uuid.UUID]string{}
+	for _, b := range blocks {
+		asset, ok := assets[*b.AssetID]
+		if !ok {
+			// The asset row is gone or belongs to another org. Leave the
+			// block bare; the player shows its "not attached" state rather
+			// than a broken document.
+			continue
+		}
+		cp := asset
+		b.Asset = &cp
+		if url, ok := signed[asset.ID]; ok {
+			b.Asset.DownloadURL = &url
+		} else if url, err := s.storage.SignedURL(ctx, asset.Bucket, asset.StoragePath,
+			s.cfg.DownloadURLTTL); err == nil {
+			signed[asset.ID] = url
+			b.Asset.DownloadURL = &url
+		}
+	}
+
+	// Pages are per (asset, range), so cache on that pair.
+	type rangeKey struct {
+		asset    uuid.UUID
+		from, to int
+	}
+	pageCache := map[rangeKey][]domain.RenderablePage{}
+	for _, b := range blocks {
+		if b.Type != domain.BlockPDF && b.Type != domain.BlockPPTX {
+			continue
+		}
+		asset, ok := assets[*b.AssetID]
+		if !ok {
+			continue
+		}
+		from, to := 1, asset.PageCount
+		if b.PageFrom != nil && *b.PageFrom >= 1 {
+			from = *b.PageFrom
+		}
+		if b.PageTo != nil && *b.PageTo >= from {
+			to = *b.PageTo
+		}
+		if to > asset.PageCount && asset.PageCount > 0 {
+			to = asset.PageCount
+		}
+		key := rangeKey{asset: asset.ID, from: from, to: to}
+		pages, ok := pageCache[key]
+		if !ok {
+			pages, err = s.db.RenderablePages(ctx, orgID, asset.ID, from, to)
+			if err != nil {
+				return err
+			}
+			pageCache[key] = pages
+		}
+		b.Pages = pages
+		b.ChapterCount = asset.ChapterCount
+	}
+	return nil
 }
 
 // applyLessonProgress merges the learner's per-lesson state into the

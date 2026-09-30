@@ -81,6 +81,11 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	// Sniff the content rather than trusting the extension, because a
 	// renamed executable must not be stored as course material.
 	kind := material.SniffKind(header.Filename, header.Header.Get("Content-Type"), data)
+	if kind == material.KindUnsupported {
+		httpx.Fail(w, httpx.FieldError("file",
+			"Legacy PowerPoint .ppt files cannot be read. Re-save the deck as .pptx and upload it again."))
+		return
+	}
 	if !kind.IsPaginated() {
 		httpx.Fail(w, httpx.FieldError("file",
 			"Only PDF and PPTX documents are supported for course content."))
@@ -98,8 +103,15 @@ func (s *Server) uploadAsset(w http.ResponseWriter, r *http.Request) {
 	}
 	pages := make([]domain.AssetPage, 0, len(result.Pages))
 	for _, p := range result.Pages {
+		// Only store text for pages inside a chapter. Blank pages are
+		// structural delimiters and must carry no text, or the player would
+		// render a stray empty page.
+		var text *string
+		if !p.IsBlank {
+			text = trimOrNil(p.Text)
+		}
 		pages = append(pages, domain.AssetPage{
-			PageNumber: p.Number, TextContent: trimOrNil(p.Text), IsBlank: p.IsBlank,
+			PageNumber: p.Number, TextContent: text, IsBlank: p.IsBlank,
 			ChapterIndex: p.ChapterIndex, ChapterTitle: trimOrNil(p.ChapterTitle),
 		})
 	}

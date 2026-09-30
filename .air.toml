@@ -1,0 +1,17 @@
+root = "."
+tmp_dir = "bin"
+env_files = [".env"]
+
+[build]
+cmd = "go build -o ./bin/api.exe ./cmd/api"
+bin = "./bin/api.exe"
+include_ext = ["go", "sql", "toml"]
+exclude_dir = ["bin", "tmp", "node_modules", ".git", ".kaziwise-data"]
+exclude_regex = ["_test\\.go", "mock_", "devwatch"]
+# This machine does not deliver filesystem change notifications, so the
+# default fsnotify backend never fires. Polling is the only thing that works.
+poll = true
+poll_interval = 400
+delay = 300
+stop_on_error = false
+log = "air.log"

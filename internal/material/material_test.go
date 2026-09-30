@@ -135,6 +135,24 @@ func TestDetectAndSniffKind(t *testing.T) {
 	}
 }
 
+// A legacy binary .ppt is an OLE compound file. Classifying it as slides
+// sent the parser into the zip reader, which cannot read it, so the upload
+// failed with a confusing "open pptx archive" error instead of naming the
+// real problem.
+func TestLegacyPPTPresentationIsUnsupported(t *testing.T) {
+	oleHeader := []byte{0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1}
+	if k := DetectKind("legacy.ppt", ""); k != KindUnsupported {
+		t.Errorf("DetectKind(ppt) = %v, want unsupported", k)
+	}
+	if k := SniffKind("legacy.ppt", "application/vnd.ms-powerpoint", oleHeader); k != KindUnsupported {
+		t.Errorf("SniffKind(ppt) = %v, want unsupported", k)
+	}
+	// A real pptx is a zip and must still be accepted.
+	if k := SniffKind("modern.pptx", "", []byte("PK\x03\x04")); k != KindPPTX {
+		t.Errorf("SniffKind(pptx) = %v, want pptx", k)
+	}
+}
+
 func TestNormalizeText(t *testing.T) {
 	got := NormalizeText("Line  one\r\n\r\n\r\nLine   two\nLine three\x00")
 	// Runs of blank lines collapse to a single blank line; single ones

@@ -317,6 +317,20 @@ func prefixCols(clauses []string, cols ...string) []string {
 // itoa is a tiny helper for building numbered placeholders.
 func itoa(n int) string { return strconv.Itoa(n) }
 
+// nullableText turns a cleared field into an explicit SQL NULL. A PATCH needs
+// to tell "absent, leave alone" apart from "present but emptied", because a nil
+// pointer already means the first and cannot also mean the second. Empty text is
+// stored as NULL so a cleared field does not read back as an empty string.
+func nullableText(s *string) any {
+	if s == nil {
+		return nil
+	}
+	if *s == "" {
+		return nil
+	}
+	return *s
+}
+
 // uuidStrings renders a UUID slice for use as an array query argument.
 //
 // The connection deliberately runs in pgx's "exec" mode (see Connect) so

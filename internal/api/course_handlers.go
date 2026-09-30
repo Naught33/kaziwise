@@ -139,10 +139,27 @@ func (s *Server) updateCourse(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
-	p := store.UpdateCourseParams{
-		Title: trimOrNil(deref(req.Title)), Code: trimOrNil(deref(req.Code)),
-		Description: trimOrNil(deref(req.Description)),
-		Category:    trimOrNil(deref(req.Category)),
+	// Only touch the fields the client actually sent, so clearing one does
+	// not depend on the others. See updateLesson for the same reasoning.
+	p := store.UpdateCourseParams{}
+	if req.Title != nil {
+		p.Title = trimOrNil(*req.Title)
+		if p.Title == nil {
+			httpx.Fail(w, httpx.FieldError("title", "Enter a course title."))
+			return
+		}
+	}
+	if req.Code != nil {
+		v := strings.TrimSpace(*req.Code)
+		p.Code = &v
+	}
+	if req.Description != nil {
+		v := strings.TrimSpace(*req.Description)
+		p.Description = &v
+	}
+	if req.Category != nil {
+		v := strings.TrimSpace(*req.Category)
+		p.Category = &v
 	}
 	if req.EstimatedMinutes != nil {
 		if *req.EstimatedMinutes < 0 {
@@ -339,10 +356,19 @@ func (s *Server) updateModule(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
-	p := store.UpdateModuleParams{
-		Title:       trimOrNil(deref(req.Title)),
-		Description: trimOrNil(deref(req.Description)),
-		Position:    req.Position,
+	// Only the fields the client sent are touched, so clearing the
+	// description does not depend on the title being present too.
+	p := store.UpdateModuleParams{Position: req.Position}
+	if req.Title != nil {
+		p.Title = trimOrNil(*req.Title)
+		if p.Title == nil {
+			httpx.Fail(w, httpx.FieldError("title", "A module needs a title."))
+			return
+		}
+	}
+	if req.Description != nil {
+		v := strings.TrimSpace(*req.Description)
+		p.Description = &v
 	}
 	module, err := s.db.UpdateModule(r.Context(), orgID, id, p)
 	if err != nil {
@@ -410,6 +436,14 @@ func (s *Server) createLesson(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
+	// The course id is in the path as {id} and must be forwarded to the
+	// store: lessons.course_id is a not-null foreign key, so omitting it
+	// fails the insert with a foreign key violation.
+	courseID, err := pathUUID(r, "id")
+	if err != nil {
+		httpx.Fail(w, err)
+		return
+	}
 	moduleID, err := pathUUID(r, "moduleId")
 	if err != nil {
 		httpx.Fail(w, err)
@@ -443,7 +477,7 @@ func (s *Server) createLesson(w http.ResponseWriter, r *http.Request) {
 		position = *req.Position
 	}
 	lesson, err := s.db.CreateLesson(r.Context(), store.CreateLessonParams{
-		OrgID: orgID, ModuleID: moduleID, Title: title,
+		OrgID: orgID, CourseID: courseID, ModuleID: moduleID, Title: title,
 		Summary: trimOrNil(deref(req.Summary)), Kind: kind,
 		Position: position, EstimatedMinutes: req.EstimatedMinutes,
 	})
@@ -497,9 +531,25 @@ func (s *Server) updateLesson(w http.ResponseWriter, r *http.Request) {
 		httpx.Fail(w, err)
 		return
 	}
+	// A PATCH must distinguish three cases per field: absent (leave alone),
+	// present with a value (set it), and present but emptied (clear it).
+	// A nil pointer already means the first, so the optional string fields
+	// are only built when the client actually sent the key.
 	p := store.UpdateLessonParams{
-		Title: trimOrNil(deref(req.Title)), Summary: trimOrNil(deref(req.Summary)),
 		Position: req.Position, EstimatedMinutes: req.EstimatedMinutes,
+	}
+	if req.Title != nil {
+		p.Title = trimOrNil(*req.Title)
+		if p.Title == nil {
+			httpx.Fail(w, httpx.FieldError("title", "A lesson needs a title."))
+			return
+		}
+	}
+	if req.Summary != nil {
+		// Keep the pointer non-nil even when the text is empty: nil means
+		// "leave alone", and "" means "clear this field".
+		v := strings.TrimSpace(*req.Summary)
+		p.Summary = &v
 	}
 	if req.Kind != nil {
 		kind := domain.LessonKind(*req.Kind)

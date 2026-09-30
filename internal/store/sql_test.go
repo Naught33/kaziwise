@@ -485,6 +485,52 @@ func TestEmployeeFiltersStayAliased(t *testing.T) {
 	}
 }
 
+// TestCreateCourseTreeSuppliesRequiredForeignKeys guards the tree tables,
+// where the parent key is not optional in the schema. CreateLesson left
+// CourseID unset, so every new lesson failed on lessons_course_id_fkey and
+// the builder reported a conflict instead of a bug.
+func TestCreateCourseTreeSuppliesRequiredForeignKeys(t *testing.T) {
+	src, err := os.ReadFile("courses.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+
+	// The insert names course_id, so the argument list must bind a value
+	// for it rather than trusting a struct field the caller may omit.
+	for _, want := range []string{"select course_id from modules where id = $1 and org_id = $2"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("CreateLesson must derive course_id from the module: missing %q", want)
+		}
+	}
+	// A lesson may not be attached to a module from another course.
+	if !strings.Contains(text, "module does not belong to this course") {
+		t.Error("CreateLesson must reject a module that belongs to a different course")
+	}
+	// The zero uuid must never reach an insert on a foreign key column.
+	if strings.Contains(text, "p.CourseID, p.OrgID") {
+		t.Error("CreateLesson still binds the caller-supplied course id; bind the derived one")
+	}
+}
+
+// TestNullableTextClearsRatherThanSkips pins the difference between a field
+// that was not sent and one that was sent empty. A PATCH that cannot express
+// "clear this" leaves the old value in place and the edit looks like it
+// silently failed.
+func TestNullableTextClearsRatherThanSkips(t *testing.T) {
+	if got := nullableText(nil); got != nil {
+		t.Errorf("nullableText(nil) = %v, want nil (field absent)", got)
+	}
+	empty := ""
+	if got := nullableText(&empty); got != nil {
+		t.Errorf("nullableText(\"\") = %v, want nil (field cleared)", got)
+	}
+	value := "keep me"
+	if got := nullableText(&value); got != value {
+		t.Errorf("nullableText(%q) = %v, want %q", value, got, value)
+	}
+}
+
 // TestItoaMatchesStrconv keeps the hand-rolled helper aligned with the
 // standard library, since arg() is built on it.
 func TestItoaMatchesStrconv(t *testing.T) {

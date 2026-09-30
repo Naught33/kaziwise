@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/google/uuid"
@@ -91,13 +92,13 @@ func (db *DB) UpdateCourse(ctx context.Context, orgID, id uuid.UUID, p UpdateCou
 		add("title", *p.Title)
 	}
 	if p.Code != nil {
-		add("code", *p.Code)
+		add("code", nullableText(p.Code))
 	}
 	if p.Description != nil {
-		add("description", *p.Description)
+		add("description", nullableText(p.Description))
 	}
 	if p.Category != nil {
-		add("category", *p.Category)
+		add("category", nullableText(p.Category))
 	}
 	if p.CoverAssetID != nil {
 		add("cover_asset_id", *p.CoverAssetID)
@@ -293,7 +294,7 @@ func (db *DB) UpdateModule(ctx context.Context, orgID, id uuid.UUID, p UpdateMod
 		set = append(set, "title = $"+itoa(len(args)))
 	}
 	if p.Description != nil {
-		args = append(args, *p.Description)
+		args = append(args, nullableText(p.Description))
 		set = append(set, "description = $"+itoa(len(args)))
 	}
 	if p.Position != nil {
@@ -388,12 +389,24 @@ func (db *DB) CreateLesson(ctx context.Context, p CreateLessonParams) (*domain.L
 		p.Position = db.nextPosition(ctx,
 			`select coalesce(max(position),0)+1 from lessons where module_id = $1`, p.ModuleID)
 	}
+	// Derive course_id from the module rather than trusting the caller, and
+	// scope on org_id at the same time. A lesson that names a course outside
+	// the caller's org must not be created.
+	var courseID uuid.UUID
+	if err := db.pool.QueryRow(ctx,
+		`select course_id from modules where id = $1 and org_id = $2`,
+		p.ModuleID, p.OrgID).Scan(&courseID); err != nil {
+		return nil, mapErr(err)
+	}
+	if courseID != p.CourseID {
+		return nil, fmt.Errorf("%w: module does not belong to this course", ErrConflict)
+	}
 	var l domain.Lesson
 	err := db.pool.QueryRow(ctx, `
 		insert into lessons (module_id, course_id, org_id, title, summary, kind, position, estimated_minutes)
 		values ($1,$2,$3,$4,$5,$6,$7,$8)
 		returning `+lessonCols,
-		p.ModuleID, p.CourseID, p.OrgID, p.Title, p.Summary, p.Kind, p.Position, p.EstimatedMinutes).
+		p.ModuleID, courseID, p.OrgID, p.Title, p.Summary, p.Kind, p.Position, p.EstimatedMinutes).
 		Scan(&l.ID, &l.ModuleID, &l.CourseID, &l.OrgID, &l.Title, &l.Summary, &l.Kind,
 			&l.Position, &l.EstimatedMinutes, &l.CreatedAt, &l.UpdatedAt)
 	if err != nil {
@@ -421,7 +434,7 @@ func (db *DB) UpdateLesson(ctx context.Context, orgID, id uuid.UUID, p UpdateLes
 		add("title", *p.Title)
 	}
 	if p.Summary != nil {
-		add("summary", *p.Summary)
+		add("summary", nullableText(p.Summary))
 	}
 	if p.Kind != nil {
 		add("kind", *p.Kind)
@@ -557,7 +570,7 @@ func (db *DB) UpdateBlock(ctx context.Context, orgID, id uuid.UUID, p UpdateBloc
 		add("title", *p.Title)
 	}
 	if p.Body != nil {
-		add("body", *p.Body)
+		add("body", nullableText(p.Body))
 	}
 	if p.AssetID != nil {
 		add("asset_id", *p.AssetID)
