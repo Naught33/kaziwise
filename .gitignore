@@ -1,0 +1,16 @@
+# Local environment
+.env
+.env*
+*.local
+
+# Build output
+/api
+/api.exe
+/bin/
+
+# Local storage driver root
+/.kaziwise-data/
+
+# Go
+*.test
+*.out
