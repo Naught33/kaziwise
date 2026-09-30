@@ -1,0 +1,88 @@
+/*
+ * KaziWise MVP design system.
+ * Palette, type, radius and spacing are transcribed from the design
+ * system table in the prototype handoff (section 7), so the UI matches
+ * the approved design rather than an arbitrary theme.
+ *
+ *   Primary        #1B8A8F  primary buttons, links, progress
+ *   Navigation     #16324F  sidebar, headings, strong contrast
+ *   Background     #F7F9FC  application background
+ *   Surface        #FFFFFF  cards, tables, forms
+ *   Success        #159957  passed / completed
+ *   Warning        #D99000  pending / due soon
+ *   Danger         #D64545  failed / overdue
+ *   Typography     Aptos / system sans-serif
+ *   Radius         10-16px
+ *   Spacing        8px base grid
+ */
+
+:root {
+  /* Brand */
+  --primary: #1b8a8f;
+  --primary-hover: #17757a;
+  --primary-active: #126165;
+  --primary-soft: #e6f4f4;
+  --primary-ring: rgba(27, 138, 143, 0.28);
+
+  --nav: #16324f;
+  --nav-deep: #102740;
+  --nav-soft: #24486b;
+  --nav-text: #c6d6e6;
+
+  --bg: #f7f9fc;
+  --surface: #ffffff;
+  --surface-sunken: #f1f5fa;
+  --surface-hover: #f4f7fb;
+
+  --success: #159957;
+  --success-soft: #e6f6ee;
+  --warning: #d99000;
+  --warning-soft: #fdf3e0;
+  --danger: #d64545;
+  --danger-soft: #fbeaea;
+  --info: #2f6fb0;
+  --info-soft: #e9f1f9;
+
+  /* Text */
+  --text: #16202b;
+  --text-soft: #5a6b7c;
+  --text-muted: #8595a5;
+  --text-invert: #ffffff;
+  --border: #e2e8f0;
+  --border-strong: #cdd7e3;
+
+  /* Typography: Aptos first, then the platform sans stack. */
+  --font: "Aptos", "Aptos Display", -apple-system, BlinkMacSystemFont,
+    "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "Cascadia Mono", "SF Mono", Consolas, "Liberation Mono", monospace;
+
+  /* Radius 10-16px band */
+  --radius-sm: 10px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* 8px base spacing grid */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --s8: 64px;
+
+  --shadow-sm: 0 1px 2px rgba(22, 50, 79, 0.06), 0 1px 3px rgba(22, 50, 79, 0.04);
+  --shadow: 0 2px 4px rgba(22, 50, 79, 0.05), 0 6px 16px rgba(22, 50, 79, 0.07);
+  --shadow-lg: 0 12px 32px rgba(22, 50, 79, 0.13);
+
+  /* Comfortable touch target for mobile (section 9). */
+  --tap: 44px;
+
+  --sidebar-w: 248px;
+  --topbar-h: 64px;
+  --bottomnav-h: 64px;
+
+  --ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur: 160ms;
+}
